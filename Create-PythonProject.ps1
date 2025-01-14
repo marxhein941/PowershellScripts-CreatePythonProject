@@ -85,12 +85,12 @@ Write-Host "`nSTEP 1: Ensuring Poetry dependencies are installed..."
 Write-Host "Upgrading pip with the Python launcher to avoid dependency resolver issues..."
 py -m pip install --upgrade pip --quiet
 
-# Install modules that Poetry or requests commonly require
-Install-PythonModule "urllib3"
-Install-PythonModule "requests"
-Install-PythonModule "certifi"
-#Install-PythonModule "charset-normalizer"
-Install-PythonModule "idna"
+# # Install modules that Poetry or requests commonly require
+# Install-PythonModule "urllib3"
+# Install-PythonModule "requests"
+# Install-PythonModule "certifi"
+# Install-PythonModule "idna"
+# Install-PythonModule "python-dotenv"
 
 
 
@@ -127,6 +127,10 @@ try {
   # Force Poetry to use 'py' now that pyproject.toml exists
   Write-Host "Forcing Poetry to use 'py' so it doesn't rely on a missing 'python' command..."
   poetry env use py | Out-Null
+
+  # Add python-dotenv as a dependency
+  Write-Host "Adding python-dotenv as a dependency..."
+  poetry add python-dotenv | Out-Null
 
   # (Optional) Run 'poetry update' inside this new folder
   Write-Host "`nSTEP 3.1: Updating dependencies with 'poetry update'..."
@@ -183,6 +187,96 @@ if (-not (Test-Path -Path "tests")) {
   New-Item -ItemType Directory -Path "tests" | Out-Null
 }
 New-Item -Path "tests/test_main.py" -ItemType "File" -Value "def test_example(): assert 1 + 1 == 2" | Out-Null
+
+# Create a .env file with a variable URL=https://github.com/
+if (-not (Test-Path -Path ".env")) {
+  Write-Host "Creating .env file with default URL variable..."
+  New-Item -Path ".env" -ItemType "File" -Value @"
+# Environment variables for the project
+# Add additional variables in the format:
+# VARIABLE_NAME=value
+
+URL=https://github.com/
+"@ | Out-Null
+}
+
+# Create a Python file in the src folder with predefined content
+$pythonFilePath = "src\env_utils.py"
+$pythonFileContent = @"
+from dotenv import load_dotenv, find_dotenv, get_key, set_key
+
+# Path to your .env file
+dotenv_path = find_dotenv()
+
+# Load the environment variables from .env file
+load_dotenv(dotenv_path)
+
+# Function to update environment variables directly
+def update_environment_variable(key, value):
+    set_key(dotenv_path, key, value)
+    # Reload the dotenv after update to refresh the environment variables
+    load_dotenv(dotenv_path)
+    
+# Function to get environment variables directly
+def get_environment_variable(key):
+    return get_key(dotenv_path, key)
+
+# Environment variables
+def get_url():
+    return get_environment_variable('OPENAI_URL')
+"@
+
+Write-Host "Creating Python file '$pythonFilePath' with environment utility functions..."
+if (-not (Test-Path -Path "src")) {
+  New-Item -ItemType Directory -Path "src" | Out-Null
+}
+Set-Content -Path $pythonFilePath -Value $pythonFileContent
+
+# Create a PowerShell script to update .toml and .lock files
+$psFilePath = "update_poetry_config.ps1"
+$psFileContent = @"
+# Prompt the user for mandatory package name and optional package version
+param (
+    [string]$DependencyName,
+    [string]$DependencyVersion = ""  # Default to an empty string
+)
+
+# Ensure DependencyName is provided
+if (-not $DependencyName) {
+    $DependencyName = Read-Host "Enter the name of the package to add"
+    if (-not $DependencyName) {
+        Write-Host "ERROR: Package name is required. Please provide a valid package name." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Prompt for optional DependencyVersion if not provided
+if (-not $DependencyVersion) {
+    $DependencyVersion = Read-Host "Enter the version of the package (leave blank for the latest version)"
+}
+
+# Construct the command to add the dependency
+if (-not $DependencyVersion) {
+    # Install the latest version
+    Write-Host "Adding the latest version of '$DependencyName' to pyproject.toml..."
+    poetry add "$DependencyName"
+}
+else {
+    # Install the specified version
+    Write-Host "Adding '$DependencyName@$DependencyVersion' to pyproject.toml..."
+    poetry add "$DependencyName@$DependencyVersion"
+}
+
+# Lock the dependencies
+Write-Host "Locking dependencies..."
+poetry lock
+
+Write-Host "Dependency '$DependencyName' has been successfully added and locked."
+"@
+
+Write-Host "Creating PowerShell script '$psFilePath' for updating .toml and .lock files..."
+Set-Content -Path $psFilePath -Value $psFileContent
+
 
 
 

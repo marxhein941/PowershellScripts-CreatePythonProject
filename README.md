@@ -1,4 +1,4 @@
-# {{PROJECT_NAME}}
+# Generate generic Python project in Visual Studio Code
 
 This project was generated via a PowerShell script that automates the setup of a new Python/Poetry project. Here’s an overview of the generated structure and usage tips.
 
@@ -47,7 +47,7 @@ After running the setup script, you should have the following folders and files:
 2. **Move** into the project folder:
 
    ```bash
-   cd {{PROJECT_NAME}}
+   cd /path/to/your/project/directory
 
 ## Usage
 

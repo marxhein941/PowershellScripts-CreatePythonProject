@@ -35,6 +35,33 @@ else {
 
 # --- STEP 1: Define utility functions ---
 
+# --- STEP 1.0: Check Python version ---
+function Test-PythonVersion {
+    try {
+        $pythonVersion = py --version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $versionMatch = [regex]::Match($pythonVersion, 'Python (\d+)\.(\d+)')
+            if ($versionMatch.Success) {
+                $major = [int]$versionMatch.Groups[1].Value
+                $minor = [int]$versionMatch.Groups[2].Value
+                if ($major -eq 3 -and $minor -ge 8) {
+                    Write-Host "Python version: $pythonVersion"
+                    return $true
+                }
+                else {
+                    Write-Host "ERROR: Python 3.8 or higher is required. Found: $pythonVersion" -ForegroundColor Red
+                    return $false
+                }
+            }
+        }
+        return $false
+    }
+    catch {
+        Write-Host "ERROR: Python is not installed or not accessible via 'py' command." -ForegroundColor Red
+        return $false
+    }
+}
+
 # --- STEP 1.1: Test if a Python module is importable using `py` ---
 function Test-PythonModule($moduleName) {
     $cmd = "import $moduleName"
@@ -83,8 +110,13 @@ function Test-Poetry {
     }
 }
 
-# --- STEP 2: Install and validate dependencies ---
-Write-Host "`nSTEP 2: Ensuring Poetry dependencies are installed..."
+# --- STEP 2: Validate Python installation and dependencies ---
+Write-Host "`nSTEP 2: Validating Python installation..."
+if (-not (Test-PythonVersion)) {
+    Write-Host "Please install Python 3.8 or higher and ensure it's accessible via the 'py' command." -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "Upgrading pip with the Python launcher to avoid dependency resolver issues..."
 py -m pip install --upgrade pip --quiet
 
@@ -126,24 +158,35 @@ try {
     Write-Host "Forcing Poetry to use 'py' so it doesn't rely on a missing 'python' command..."
     poetry env use py | Out-Null
 
-    Write-Host "Adding python-dotenv as a dependency..."
-    poetry add python-dotenv | Out-Null
+    Write-Host "Adding core dependencies..."
+    $addResult = poetry add python-dotenv 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: Failed to add python-dotenv: $addResult" -ForegroundColor Yellow
+    }
 
-    # --- STEP 4.3: Check Jupyter Notebook support ---
+    # --- STEP 4.3: Add development dependencies ---
+    Write-Host "Adding development dependencies (pytest, black, flake8, mypy, isort, pre-commit)..."
+    $devResult = poetry add --group dev pytest pytest-cov black flake8 mypy isort pre-commit 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: Some development dependencies may not have been installed: $devResult" -ForegroundColor Yellow
+    }
+
+    # --- STEP 4.4: Check Jupyter Notebook support ---
     if ($UseJupyter -eq "y") {
-        Write-Host "Installing Jupyter Notebooks..."
+        Write-Host "Installing Jupyter Notebooks and ipykernel..."
         Set-Location -Path $BasePath
-        poetry add notebook | Out-Null
-
+        $jupyterResult = poetry add notebook ipykernel 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARNING: Failed to add Jupyter dependencies: $jupyterResult" -ForegroundColor Yellow
+        }
         Set-Location -Path $ProjectPath
-
-        Write-Host "Jupyter Notebooks installed successfully."
+        Write-Host "Jupyter Notebooks installation completed."
     }
     else {
         Write-Host "Skipping Jupyter Notebooks installation."
     }
 
-    # --- STEP 4.4: Update Poetry dependencies ---
+    # --- STEP 4.5: Update Poetry dependencies ---
     Write-Host "`nUpdating dependencies with 'poetry update'..."
     poetry update | Out-Null
 }
@@ -229,7 +272,20 @@ New-Item -Path "docs/README.md" -ItemType "File" -Value "# Documentation" | Out-
 if (-not (Test-Path -Path "tests")) {
     New-Item -ItemType Directory -Path "tests" | Out-Null
 }
-New-Item -Path "tests/test_main.py" -ItemType "File" -Value "def test_example(): assert 1 + 1 == 2" | Out-Null
+New-Item -Path "tests/__init__.py" -ItemType "File" -Value "" | Out-Null
+New-Item -Path "tests/test_main.py" -ItemType "File" -Value @"
+import pytest
+from src.main import main
+
+def test_example():
+    """Example test case."""
+    assert 1 + 1 == 2
+
+def test_main():
+    """Test the main function."""
+    # This will need to be updated based on your main function
+    assert main() is None
+"@ | Out-Null
 
 # --- STEP 6.4: Create .env file ---
 if (-not (Test-Path -Path ".env")) {
@@ -260,12 +316,248 @@ def get_environment_variable(key):
     return get_key(dotenv_path, key)
 
 def get_url():
-    return get_environment_variable('OPENAI_URL')
+    return get_environment_variable('URL')
 "@
 Write-Host "Creating Python file '$pythonFilePath'..."
 Set-Content -Path $pythonFilePath -Value $pythonFileContent
 
-# --- STEP 6.6: Create "scripts" folder and add .ps1 scripts
+# --- STEP 6.5.1: Create src/main.py ---
+$mainFilePath = "src\main.py"
+$mainFileContent = @"
+import logging
+from pathlib import Path
+from env_utils import get_environment_variable, update_environment_variable
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def main():
+    """Main entry point of the application."""
+    logger.info("Application started")
+    
+    # Example: Read an environment variable
+    url = get_environment_variable('URL')
+    if url:
+        logger.info(f"URL from environment: {url}")
+    
+    # Your application logic here
+    logger.info("Application finished")
+    
+if __name__ == "__main__":
+    main()
+"@
+Write-Host "Creating main.py entry point..."
+Set-Content -Path $mainFilePath -Value $mainFileContent
+
+# --- STEP 6.5.2: Create logging configuration ---
+$loggingConfigPath = "src\logging_config.py"
+$loggingConfigContent = @"
+import logging
+import logging.config
+from pathlib import Path
+
+# Create logs directory if it doesn't exist
+log_dir = Path('logs')
+log_dir.mkdir(exist_ok=True)
+
+LOGGING_CONFIG = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        },
+        'detailed': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'level': 'INFO',
+            'formatter': 'standard',
+            'stream': 'ext://sys.stdout'
+        },
+        'file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'level': 'DEBUG',
+            'formatter': 'detailed',
+            'filename': 'logs/app.log',
+            'maxBytes': 10485760,  # 10MB
+            'backupCount': 5
+        }
+    },
+    'loggers': {
+        '': {  # root logger
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False
+        }
+    }
+}
+
+def setup_logging():
+    """Set up logging configuration."""
+    logging.config.dictConfig(LOGGING_CONFIG)
+"@
+Write-Host "Creating logging configuration..."
+Set-Content -Path $loggingConfigPath -Value $loggingConfigContent
+
+# --- STEP 6.6: Create README.md ---
+$readmePath = "README.md"
+$readmeContent = @"
+# $ProjectName
+
+A Python project created with create-python-project.ps1
+
+## Project Structure
+
+```
+$ProjectName/
+├── src/                    # Source code
+│   ├── __init__.py
+│   ├── main.py            # Main entry point
+│   ├── env_utils.py       # Environment variable utilities
+│   └── logging_config.py  # Logging configuration
+├── tests/                 # Test files
+│   ├── __init__.py
+│   └── test_main.py
+├── docs/                  # Documentation
+├── scripts/               # Utility scripts
+├── .env                   # Environment variables (not in git)
+├── .gitignore
+├── pyproject.toml         # Poetry configuration
+└── README.md
+```
+
+## Setup
+
+### Prerequisites
+
+- Python 3.8 or higher
+- Poetry (installed automatically if not present)
+
+### Installation
+
+1. Clone the repository
+2. Navigate to the project directory
+3. Install dependencies:
+   ```bash
+   poetry install
+   ```
+
+### Running the Application
+
+```bash
+poetry run python src/main.py
+```
+
+### Running Tests
+
+```bash
+poetry run pytest
+```
+
+With coverage:
+```bash
+poetry run pytest --cov=src --cov-report=html
+```
+
+### Code Quality
+
+Format code:
+```bash
+poetry run black .
+```
+
+Lint code:
+```bash
+poetry run flake8 .
+```
+
+Type checking:
+```bash
+poetry run mypy src/
+```
+
+Sort imports:
+```bash
+poetry run isort .
+```
+
+### Pre-commit Hooks
+
+Install pre-commit hooks:
+```bash
+poetry run pre-commit install
+```
+
+Run manually:
+```bash
+poetry run pre-commit run --all-files
+```
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and update the values:
+
+```bash
+cp .env.example .env
+```
+
+## Development
+
+### Adding Dependencies
+
+```bash
+poetry add <package-name>
+```
+
+For development dependencies:
+```bash
+poetry add --group dev <package-name>
+```
+
+### Updating Dependencies
+
+```bash
+poetry update
+```
+
+## License
+
+[Your License Here]
+"@
+Write-Host "Creating README.md..."
+Set-Content -Path $readmePath -Value $readmeContent
+
+# --- STEP 6.7: Create .env.example ---
+$envExamplePath = ".env.example"
+$envExampleContent = @"
+# Environment variables for the project
+# Copy this file to .env and update the values
+
+# API URLs
+URL=https://api.example.com
+
+# API Keys (keep these secret!)
+API_KEY=your-api-key-here
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost/dbname
+
+# Application Settings
+DEBUG=False
+LOG_LEVEL=INFO
+"@
+Write-Host "Creating .env.example..."
+Set-Content -Path $envExamplePath -Value $envExampleContent
+
+# --- STEP 6.8: Create "scripts" folder and add .ps1 scripts
 Write-Host "`nCreating 'scripts' folder and adding sample scripts..."
 
 # Define the "scripts" folder path
@@ -388,6 +680,143 @@ else {
 #     Write-Host "'get-project-structure-src.ps1' already exists in the 'scripts' folder."
 # }
 
+
+# --- STEP 6.9: Create .vscode/settings.json ---
+Write-Host "`nCreating VS Code settings for Python development..."
+$vscodeDir = ".vscode"
+if (-not (Test-Path -Path $vscodeDir)) {
+    New-Item -ItemType Directory -Path $vscodeDir | Out-Null
+}
+
+$vscodeSettingsPath = "$vscodeDir\settings.json"
+$vscodeSettingsContent = @"
+{
+    "python.linting.enabled": true,
+    "python.linting.flake8Enabled": true,
+    "python.linting.mypyEnabled": true,
+    "python.formatting.provider": "black",
+    "python.sortImports.provider": "isort",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": true
+    },
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/.pytest_cache": true,
+        "**/.mypy_cache": true
+    },
+    "[python]": {
+        "editor.rulers": [88],
+        "editor.tabSize": 4
+    }
+}
+"@
+Set-Content -Path $vscodeSettingsPath -Value $vscodeSettingsContent
+
+# --- STEP 6.10: Create .pre-commit-config.yaml ---
+Write-Host "Creating pre-commit configuration..."
+$preCommitConfigPath = ".pre-commit-config.yaml"
+$preCommitConfigContent = @"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        language_version: python3
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        args: ["--max-line-length=88", "--extend-ignore=E203,W503"]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        args: ["--ignore-missing-imports"]
+"@
+Set-Content -Path $preCommitConfigPath -Value $preCommitConfigContent
+
+# --- STEP 6.11: Create pyproject.toml configurations ---
+Write-Host "Adding tool configurations to pyproject.toml..."
+$pyprojectPath = "pyproject.toml"
+if (Test-Path -Path $pyprojectPath) {
+    $pyprojectContent = Get-Content -Path $pyprojectPath -Raw
+    
+    # Add tool configurations at the end
+    $toolConfigs = @"
+
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+]
+"@
+    
+    # Append configurations if they don't already exist
+    if ($pyprojectContent -notmatch "\[tool\.black\]") {
+        Add-Content -Path $pyprojectPath -Value $toolConfigs
+        Write-Host "Added tool configurations to pyproject.toml"
+    }
+}
 
 # --- STEP 7: Set up GitHub Actions ---
 Write-Host "`nSTEP 7: Setting up GitHub Actions..."
